@@ -121,6 +121,35 @@ menuView.appearance = ZWBSegmentedMenuAppearance(
 )
 ```
 
+## 自定义 Cell
+
+`ZWBSegmentedMenuView` 是整条菜单容器，内部封装横向 `UICollectionView`。默认 cell 可直接使用；如果业务菜单样式差异较大，可以注册自己的 cell，同时复用容器的点击、滚动、选中和 `JXSegmentedView` 联动能力。
+
+```swift
+final class GiftMenuCell: UICollectionViewCell, ZWBSegmentedMenuCellConfigurable {
+    static let reuseIdentifier = "GiftMenuCell"
+
+    func configure(item: ZWBMenuItem, isSelected: Bool, appearance: ZWBSegmentedMenuAppearance) {
+        // 这里写业务自己的基础 UI 赋值，容器会在创建和选中态刷新时调用。
+    }
+
+    func updateSelectionProgress(_ progress: CGFloat, item: ZWBMenuItem, appearance: ZWBSegmentedMenuAppearance) {
+        // progress 为 0 表示未选中，1 表示选中，中间值来自页面滑动联动。
+    }
+}
+
+menuView.register(GiftMenuCell.self, reuseIdentifier: GiftMenuCell.reuseIdentifier)
+
+menuView.itemSizeProvider = { item, isSelected, containerSize, appearance in
+    // 自适应宽度建议用选中态最大字号计算，并让选中/未选中返回同一宽度，避免切换时重新布局卡顿。
+    let width = max(
+        68,
+        ceil((item.title as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 14, weight: .semibold)]).width + 40)
+    )
+    return CGSize(width: width, height: containerSize.height)
+}
+```
+
 ## RTL / 阿语
 
 业务侧正常设置系统方向即可：

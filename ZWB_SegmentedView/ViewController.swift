@@ -16,7 +16,8 @@ final class ViewController: UIViewController {
         .presetGift,
         .textAdaptive,
         .alignment,
-        .discoverMixed
+        .discoverMixed,
+        .customCell
     ]
 
     override func viewDidLoad() {
@@ -112,7 +113,8 @@ extension ViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let controller = StyleDemoViewController(style: demos[indexPath.row])
+        // 每种样式使用独立 Controller，避免示例代码都混在一个 switch 里影响阅读。
+        let controller = demos[indexPath.row].makeController()
         if let navigationController {
             navigationController.pushViewController(controller, animated: true)
         } else {

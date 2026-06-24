@@ -105,8 +105,39 @@ public struct ZWBSegmentedMenuAppearance {
     }
 }
 
+/// 自定义菜单 cell 协议，业务 cell 实现后即可接收数据和选中进度。
+public protocol ZWBSegmentedMenuCellConfigurable where Self: UICollectionViewCell {
+    /// 配置基础数据，容器会在 cell 创建和选中态刷新时调用。
+    func configure(item: ZWBMenuItem, isSelected: Bool, appearance: ZWBSegmentedMenuAppearance)
+    /// 更新选中进度，progress 为 0 表示未选中，1 表示选中，中间值来自页面滑动联动。
+    func updateSelectionProgress(_ progress: CGFloat, item: ZWBMenuItem, appearance: ZWBSegmentedMenuAppearance)
+    /// 更新 RTL 状态，默认不处理，只有需要内部内容翻转的 cell 再实现。
+    func setRightToLeftLayout(_ isRightToLeft: Bool)
+}
+
+public extension ZWBSegmentedMenuCellConfigurable {
+    /// 默认 RTL 空实现，普通业务 cell 不需要关心布局方向。
+    func setRightToLeftLayout(_ isRightToLeft: Bool) {}
+}
+
 public final class ZWBSegmentedMenuView: UIView {
+    /// 自定义 cell 构建闭包，业务方可以在这里 dequeue 自己的 cell 并完成基础赋值。
+    public typealias CellProvider = (UICollectionView, IndexPath, ZWBMenuItem, Bool, ZWBSegmentedMenuAppearance) -> UICollectionViewCell
+    /// 自定义 item 尺寸闭包，业务方可按 item、选中态和容器大小返回 cell 尺寸。
+    public typealias ItemSizeProvider = (ZWBMenuItem, Bool, CGSize, ZWBSegmentedMenuAppearance) -> CGSize
+
+    /// 菜单点击回调；绑定 JXSegmentedView 时由 coordinator 接管联动。
     public var onSelect: ((Int) -> Void)?
+
+    /// 自定义 cell 构建闭包；为空时使用组件内置默认 cell，保留原有开箱即用能力。
+    public var cellProvider: CellProvider? {
+        didSet { collectionView.reloadData() }
+    }
+
+    /// 自定义 item 尺寸闭包；为空时使用默认文字/图片宽度计算。
+    public var itemSizeProvider: ItemSizeProvider? {
+        didSet { collectionView.collectionViewLayout.invalidateLayout() }
+    }
 
     public var appearance: ZWBSegmentedMenuAppearance = ZWBSegmentedMenuAppearance() {
         didSet { applyAppearance(needsReload: true) }
@@ -175,6 +206,7 @@ public final class ZWBSegmentedMenuView: UIView {
     public private(set) var selectedIndex: Int = 0
 
     private var items: [ZWBMenuItem] = []
+    private var customCellReuseIdentifier: String?
 
     private lazy var flowLayout: UICollectionViewFlowLayout = {
         let layout = UICollectionViewFlowLayout()
@@ -217,6 +249,18 @@ public final class ZWBSegmentedMenuView: UIView {
         collectionView.frame = bounds
     }
 
+    /// 注册业务自定义 cell，复杂菜单样式可复用容器的滚动、点击和联动能力。
+    public func register<Cell: UICollectionViewCell>(_ cellClass: Cell.Type, reuseIdentifier: String) {
+        customCellReuseIdentifier = reuseIdentifier
+        collectionView.register(cellClass, forCellWithReuseIdentifier: reuseIdentifier)
+    }
+
+    /// 注册 xib cell，供历史 xib 菜单 cell 接入通用容器。
+    public func register(_ nib: UINib, reuseIdentifier: String) {
+        customCellReuseIdentifier = reuseIdentifier
+        collectionView.register(nib, forCellWithReuseIdentifier: reuseIdentifier)
+    }
+
     public func reload(items: [ZWBMenuItem], selectedIndex: Int = 0) {
         self.items = items
         self.selectedIndex = clamped(index: selectedIndex)
@@ -229,6 +273,8 @@ public final class ZWBSegmentedMenuView: UIView {
         let targetIndex = clamped(index: index)
         let oldIndex = selectedIndex
         selectedIndex = targetIndex
+        // 自定义 cell 可能存在选中态宽度变化，选中切换后需要刷新布局尺寸。
+        collectionView.collectionViewLayout.invalidateLayout()
 
         let changedIndexes = Set([oldIndex, targetIndex])
         if animated {
@@ -249,7 +295,7 @@ public final class ZWBSegmentedMenuView: UIView {
         CATransaction.setDisableActions(true)
 
         for index in 0..<items.count {
-            guard let cell = collectionView.cellForItem(at: IndexPath(item: index, section: 0)) as? ZWBSegmentedMenuCell else {
+            guard let cell = collectionView.cellForItem(at: IndexPath(item: index, section: 0)) else {
                 continue
             }
             let progress: CGFloat
@@ -260,7 +306,7 @@ public final class ZWBSegmentedMenuView: UIView {
             } else {
                 progress = 0
             }
-            cell.applyProgress(progress, appearance: appearance, item: items[index])
+            applyProgress(progress, to: cell, item: items[index])
         }
 
         CATransaction.commit()
@@ -305,17 +351,13 @@ public final class ZWBSegmentedMenuView: UIView {
     private func updateVisibleCellsForSelection(indexes: Set<Int>) {
         for index in indexes {
             guard index >= 0, index < items.count,
-                  let cell = collectionView.cellForItem(at: IndexPath(item: index, section: 0)) as? ZWBSegmentedMenuCell else {
+                  let cell = collectionView.cellForItem(at: IndexPath(item: index, section: 0)) else {
                 continue
             }
-            cell.configure(
-                item: items[index],
-                isSelected: index == selectedIndex,
-                appearance: appearance
-            )
+            configure(cell: cell, item: items[index], isSelected: index == selectedIndex)
         }
 
-        for case let cell as ZWBSegmentedMenuCell in collectionView.visibleCells {
+        for cell in collectionView.visibleCells {
             guard let indexPath = collectionView.indexPath(for: cell), indexPath.item < items.count else {
                 continue
             }
@@ -327,9 +369,24 @@ public final class ZWBSegmentedMenuView: UIView {
                 initialSpringVelocity: 0.25,
                 options: [.allowUserInteraction, .beginFromCurrentState]
             ) {
-                cell.applyProgress(progress, appearance: self.appearance, item: self.items[indexPath.item])
+                self.applyProgress(progress, to: cell, item: self.items[indexPath.item])
             }
         }
+    }
+
+    /// 统一配置默认 cell 和业务自定义 cell，cell 自己决定如何展示选中态。
+    private func configure(cell: UICollectionViewCell, item: ZWBMenuItem, isSelected: Bool) {
+        if let cell = cell as? ZWBSegmentedMenuCellConfigurable {
+            cell.configure(item: item, isSelected: isSelected, appearance: appearance)
+            cell.setRightToLeftLayout(isRightToLeftLayout)
+        } else {
+            applyProgress(isSelected ? 1 : 0, to: cell, item: item)
+        }
+    }
+
+    /// 统一分发选中进度，具体动画由 cell 自己实现。
+    private func applyProgress(_ progress: CGFloat, to cell: UICollectionViewCell, item: ZWBMenuItem) {
+        (cell as? ZWBSegmentedMenuCellConfigurable)?.updateSelectionProgress(progress, item: item, appearance: appearance)
     }
 
     private func itemWidth(for item: ZWBMenuItem, isSelected: Bool) -> CGFloat {
@@ -350,13 +407,28 @@ extension ZWBSegmentedMenuView: UICollectionViewDataSource, UICollectionViewDele
     }
 
     public func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let isSelected = indexPath.item == selectedIndex
+        let item = items[indexPath.item]
+        if let cellProvider {
+            let cell = cellProvider(collectionView, indexPath, item, isSelected, appearance)
+            configure(cell: cell, item: item, isSelected: isSelected)
+            return cell
+        }
+
+        if let customCellReuseIdentifier {
+            let cell = collectionView.dequeueReusableCell(
+                withReuseIdentifier: customCellReuseIdentifier,
+                for: indexPath
+            )
+            configure(cell: cell, item: item, isSelected: isSelected)
+            return cell
+        }
+
         let cell = collectionView.dequeueReusableCell(
             withReuseIdentifier: ZWBSegmentedMenuCell.reuseIdentifier,
             for: indexPath
         ) as! ZWBSegmentedMenuCell
-        let isSelected = indexPath.item == selectedIndex
-        cell.configure(item: items[indexPath.item], isSelected: isSelected, appearance: appearance)
-        cell.setRightToLeftLayout(isRightToLeftLayout)
+        configure(cell: cell, item: item, isSelected: isSelected)
         return cell
     }
 
@@ -371,11 +443,15 @@ extension ZWBSegmentedMenuView: UICollectionViewDataSource, UICollectionViewDele
         sizeForItemAt indexPath: IndexPath
     ) -> CGSize {
         let selected = indexPath.item == selectedIndex
-        return CGSize(width: itemWidth(for: items[indexPath.item], isSelected: selected), height: collectionView.bounds.height)
+        let item = items[indexPath.item]
+        if let itemSizeProvider {
+            return itemSizeProvider(item, selected, collectionView.bounds.size, appearance)
+        }
+        return CGSize(width: itemWidth(for: item, isSelected: selected), height: collectionView.bounds.height)
     }
 }
 
-private final class ZWBSegmentedMenuCell: UICollectionViewCell {
+private final class ZWBSegmentedMenuCell: UICollectionViewCell, ZWBSegmentedMenuCellConfigurable {
     static let reuseIdentifier = "ZWBSegmentedMenuCell"
 
     private let backgroundImageView = UIImageView()
@@ -482,6 +558,11 @@ private final class ZWBSegmentedMenuCell: UICollectionViewCell {
 
         layoutBackground(mode: appearance.selectedBackgroundMode)
         setNeedsLayout()
+    }
+
+    /// 默认 cell 的选中进度更新，复用原有内置动画逻辑。
+    func updateSelectionProgress(_ progress: CGFloat, item: ZWBMenuItem, appearance: ZWBSegmentedMenuAppearance) {
+        applyProgress(progress, appearance: appearance, item: item)
     }
 
     private func setupUI() {
